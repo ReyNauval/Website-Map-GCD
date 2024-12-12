@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enhanced GeoJourney</title>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            display: flex;
+            height: 100vh;
+            font-family: Arial, sans-serif;
+        }
+
+        .side-panel {
+            width: 300px;
+            background-color: #1d5f17;
+            color: white;
+            padding: 20px;
+            box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
+            overflow-y: auto;
+        }
+
+        .side-panel h2, .side-panel h3 {
+            margin: 0 0 10px;
+            font-size: 1.2em;
+        }
+
+        .side-panel p {
+            margin-bottom: 10px;
+            font-size: 0.9em;
+        }
+
+        .side-panel select, .side-panel button, .side-panel input {
+            width: 100%;
+            margin-bottom: 10px;
+            padding: 10px;
+            font-size: 1em;
+            border: none;
+            border-radius: 5px;
+        }
+
+        .side-panel button {
+            background-color: #2e7d32;
+            color: white;
+            cursor: pointer;
+        }
+
+        .side-panel button:hover {
+            background-color: #1b5e20;
+        }
+
+        #map {
+            flex-grow: 1;
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+
+<div class="side-panel">
+    <h2>GeoJourney</h2>
+    <p>Choose a unit for measurement or search for an address below.</p>
+    <select id="unitSelect">
+        <option value="km">Kilometers (km)</option>
+        <option value="miles">Miles (mi)</option>
+        <option value="ft">Feet (ft)</option>
+    </select>
+    <button id="clearAll">Clear All Measurements</button>
+    <button id="clearLast">Remove Last Point</button>
+    <input type="text" id="addressInput" placeholder="Search Address">
+    <h3>Instructions:</h3>
+    <p>Click on the map to add measurement points. Right-click to view latitude and longitude.</p>
+    <p id="distanceDisplay">Distance: N/A</p>
+    <p id="departureAngleDisplay">Departure Angle: N/A</p>
+    <p id="arrivalAngleDisplay">Arrival Angle: N/A</p>
+</div>
+
+<div id="map"></div>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-curve"></script>
+<script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+
+<script>
+// Initialize the map
+var map = L.map('map').setView([38.8610, 71.2761], 7);
+map.zoomControl.setPosition('topright');
+L.control.scale({ position: 'bottomright' }).addTo(map);
+
+// Base map layers
+const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap contributors' });
+const satelliteLayer = L.tileLayer('https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', { maxZoom: 20, attribution: '© Google', subdomains: ['mt0', 'mt1', 'mt2', 'mt3'] });
+const openTopoMap = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, attribution: 'Map data: &copy; OpenTopoMap contributors' });
+
+osmLayer.addTo(map);
+L.control.layers({ "OpenStreetMap": osmLayer, "Satellite": satelliteLayer, "OpenTopoMap": openTopoMap }).addTo(map);
+
+const measurementLayer = L.layerGroup().addTo(map);
+const markers = [];
+const curves = [];
+let lastLatLng = null;
+let currentUnit = 'km';
+
+// Geocoder
+const geocoder = L.Control.Geocoder.nominatim();
+const addressInput = document.getElementById('addressInput');
+addressInput.addEventListener('keypress', function (e) {
+    if (e.key === 'Enter') {
+        geocoder.geocode(addressInput.value, function (results) {
+            if (results && results[0]) {
+                const latlng = results[0].center;
+                map.setView(latlng, 13);
+            }
+        });
+    }
+});
+
+// Calculate angle between two points
+function calculateAngle(start, end) {
+    const deltaY = end.lat - start.lat;
+    const deltaX = end.lng - start.lng;
+    const angle = Math.atan2(deltaY, deltaX) * (180 / Math.PI);
+    return angle < 0 ? angle + 360 : angle;
+}
+
+// Update the information panel
+function updateInfo(distance, departureAngle, arrivalAngle) {
+    document.getElementById('distanceDisplay').textContent = `Distance: ${distance ? distance.toFixed(2) + ' ' + currentUnit : 'N/A'}`;
+    document.getElementById('departureAngleDisplay').textContent = `Departure Angle: ${departureAngle !== null ? departureAngle.toFixed(2) + '°' : 'N/A'}`;
+    document.getElementById('arrivalAngleDisplay').textContent = `Arrival Angle: ${arrivalAngle !== null ? arrivalAngle.toFixed(2) + '°' : 'N/A'}`;
+}
+
+// Add a measurement
+function addMeasurement(e) {
+    const latlng = e.latlng;
+    const marker = L.marker(latlng).addTo(measurementLayer);
+    markers.push(marker);
+
+    let distance = null, departureAngle = null, arrivalAngle = null;
+
+    if (lastLatLng) {
+        distance = calculateDistance(lastLatLng, latlng);
+        departureAngle = calculateAngle(lastLatLng, latlng);
+
+        if (markers.length > 1) {
+            const secondLastLatLng = markers[markers.length - 2].getLatLng();
+            arrivalAngle = calculateAngle(secondLastLatLng, lastLatLng);
+        }
+
+        const curvePath = L.curve(
+            ['M', [lastLatLng.lat, lastLatLng.lng], 'Q', [(lastLatLng.lat + latlng.lat) / 2, (lastLatLng.lng + latlng.lng) / 2], [latlng.lat, latlng.lng]],
+            { color: 'blue', weight: 2 }
+        ).addTo(measurementLayer);
+        curves.push(curvePath);
+        curvePath.bindTooltip(`Distance: ${distance.toFixed(2)} ${currentUnit}`).openTooltip();
+    }
+
+    lastLatLng = latlng;
+    updateInfo(distance, departureAngle, arrivalAngle);
+}
+
+// Calculate distance between two points
+function calculateDistance(start, end) {
+    let distance = start.distanceTo(end);
+    if (currentUnit === 'km') distance /= 1000;
+    if (currentUnit === 'miles') distance /= 1609.34;
+    if (currentUnit === 'ft') distance *= 3.28084;
+    return distance;
+}
+
+// Show coordinates on right-click
+function showLatLng(e) {
+    const latlng = e.latlng;
+    L.popup()
+        .setLatLng(latlng)
+        .setContent(`Latitude: ${latlng.lat.toFixed(5)}, Longitude: ${latlng.lng.toFixed(5)}`)
+        .openOn(map);
+}
+
+// Clear all measurements
+document.getElementById('clearAll').addEventListener('click', function () {
+    measurementLayer.clearLayers();
+    markers.length = 0;
+    curves.length = 0;
+    lastLatLng = null;
+    updateInfo(null, null, null);
+});
+
+// Clear last measurement
+document.getElementById('clearLast').addEventListener('click', function () {
+    if (markers.length > 0) {
+        const lastMarker = markers.pop();
+        measurementLayer.removeLayer(lastMarker);
+        if (curves.length > 0) {
+            const lastCurve = curves.pop();
+            measurementLayer.removeLayer(lastCurve);
+        }
+        lastLatLng = markers.length ? markers[markers.length - 1].getLatLng() : null;
+    }
+    updateInfo(null, null, null);
+});
+
+// Update unit of measurement
+document.getElementById('unitSelect').addEventListener('change', function () {
+    currentUnit = this.value;
+});
+
+map.on('click', addMeasurement);
+map.on('contextmenu', showLatLng);
+</script>
+</body>
+</html>
